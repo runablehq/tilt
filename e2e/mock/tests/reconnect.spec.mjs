@@ -195,3 +195,24 @@ test('welcomed but before its first frame, the page is still connecting, not rec
   expect(await state(page)).toMatchObject({ status: 'connecting', message: 'Connecting…' });
   expect(await page.evaluate(() => window.tilt.stats.framesDrawn)).toBe(0);
 });
+
+test('reconnects when the first session answers pings but never delivers a video frame', async ({ page, mock }) => {
+  let firstConnection = true;
+  await page.routeWebSocket('**/stream', (client) => {
+    const server = client.connectToServer();
+    if (!firstConnection) return;
+    firstConnection = false;
+    server.onMessage((message) => {
+      // Drop VIDEO (0x01) on this connection alone. Welcome, stats and PONGs still arrive.
+      if (typeof message === 'string' || message[0] !== 0x01) client.send(message);
+    });
+  });
+  await open(page, mock);
+  const first = await sessionOf(page);
+  await mock.waitFor((m) => m.session === first && m.type === 'PING');
+  expect(await state(page)).toMatchObject({ status: 'connecting', message: 'Connecting…' });
+  expect((await stats(page)).framesDrawn).toBe(0);
+  const next = await mock.waitFor((m) => m.type === 'welcomed' && m.session !== first, { timeout: 15_000 });
+  await waitDrawn(page, 1);
+  expect(await state(page)).toMatchObject({ session: next.session, status: 'live' });
+});
